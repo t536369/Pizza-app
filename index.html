@@ -1226,7 +1226,7 @@
 
     <!-- QR CODE & SHARING CARD -->
     <footer class="share-card">
-      <h3 class="share-title">📱 Del denne siden med familien</h3>
+      <h3 class="share-title" id="share-card-title">📱 Del denne siden med familien</h3>
       <div class="qr-container">
         <span id="qr-loading-spinner" class="qr-loading">Laster QR-kode...</span>
         <img id="qr-code-img" src="" alt="Delt QR-kode">
@@ -1326,6 +1326,7 @@
     // 2. PAGE LOAD INITIALIZATION
     window.addEventListener('DOMContentLoaded', () => {
       loadLocalStorageData();
+      checkURLForImportedOrder();
       initializeRandomGreeting();
       updateUI();
       initializeQRCode();
@@ -1443,6 +1444,9 @@
       saveLocalStorageData();
       updateUI();
       
+      // Update share QR Code dynamically to contain this user's specific order
+      updateShareQRCode(capitalizedName, selectedToppings);
+
       // Toast message
       showToast(`✅ Perfetto! Pizza-valget for ${capitalizedName} er lagret.`);
       
@@ -1499,7 +1503,9 @@
         const timeStr = "Bestilt";
 
         let toppingsMarkup = '';
-        if (toppings.length === 0) {
+        if (!toppings || !Array.isArray(toppings)) {
+          toppingsMarkup = `<li class="receipt-empty-toppings">🍕 Ingen fyll registrert!</li>`;
+        } else if (toppings.length === 0) {
           toppingsMarkup = `<li class="receipt-empty-toppings">🍕 Bare bunn (ingen fyll)!</li>`;
         } else {
           toppings.forEach(top => {
@@ -1540,11 +1546,13 @@
       Object.keys(appState.selections).forEach(name => {
         totalOrders++;
         const toppingsList = appState.selections[name];
-        toppingsList.forEach(topping => {
-          if (counts[topping] !== undefined) {
-            counts[topping]++;
-          }
-        });
+        if (toppingsList && Array.isArray(toppingsList)) {
+          toppingsList.forEach(topping => {
+            if (counts[topping] !== undefined) {
+              counts[topping]++;
+            }
+          });
+        }
       });
 
       if (totalOrders === 0) {
@@ -1644,14 +1652,56 @@
       }
     }
 
+    // Check if the URL contains an imported order from a family member
+    function checkURLForImportedOrder() {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const importName = urlParams.get('import');
+        const toppingsParam = urlParams.get('toppings');
+        
+        if (importName && toppingsParam !== null) {
+          const capitalized = importName.trim().charAt(0).toUpperCase() + importName.trim().slice(1);
+          const toppingsArray = toppingsParam ? toppingsParam.split(',').map(t => t.trim()).filter(t => t.length > 0) : [];
+          
+          // Clean previous matching name to avoid duplications
+          const lower = capitalized.toLowerCase();
+          for (const key of Object.keys(appState.selections)) {
+            if (key.toLowerCase() === lower) {
+              delete appState.selections[key];
+            }
+          }
+          
+          appState.selections[capitalized] = toppingsArray;
+          saveLocalStorageData();
+          
+          // Beautiful toast message confirming the receipt after a small delay
+          setTimeout(() => {
+            showToast(`📥 Importert bestilling fra ${capitalized}! 🍕`, "success");
+            triggerConfettiBurst();
+          }, 800);
+          
+          // Clean the URL query parameters so page refresh doesn't trigger import again
+          const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+          window.history.replaceState({}, document.title, cleanUrl);
+        }
+      } catch (e) {
+        console.error("Feil ved sjekk av importert bestilling i URL", e);
+      }
+    }
+
     // 6. QR CODE AND SHARING LINK UTILITY
     function initializeQRCode() {
       const shareUrlInput = document.getElementById('share-url');
       const qrImg = document.getElementById('qr-code-img');
       const spinner = document.getElementById('qr-loading-spinner');
+      const shareTitle = document.getElementById('share-card-title');
       
-      const currentUrl = window.location.href;
+      const currentUrl = window.location.href.split('?')[0];
       shareUrlInput.value = currentUrl;
+      
+      if (shareTitle) {
+        shareTitle.innerHTML = `📱 Del denne siden med familien`;
+      }
       
       spinner.style.display = 'inline-block';
       
@@ -1673,6 +1723,30 @@
           qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(customUrl)}&color=1b5e20&bgcolor=faf7f0`;
         }
       });
+    }
+
+    function updateShareQRCode(name, toppingsArray) {
+      const shareUrlInput = document.getElementById('share-url');
+      const qrImg = document.getElementById('qr-code-img');
+      const spinner = document.getElementById('qr-loading-spinner');
+      const shareTitle = document.getElementById('share-card-title');
+      
+      const baseUrl = window.location.href.split('?')[0];
+      const shareUrl = `${baseUrl}?import=${encodeURIComponent(name)}&toppings=${encodeURIComponent(toppingsArray.join(','))}`;
+      
+      shareUrlInput.value = shareUrl;
+      spinner.style.display = 'inline-block';
+      
+      if (shareTitle) {
+        shareTitle.innerHTML = `📱 Send bestillingen din til kokken!`;
+      }
+      
+      const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(shareUrl)}&color=1b5e20&bgcolor=faf7f0`;
+      
+      qrImg.onload = () => {
+        spinner.style.display = 'none';
+      };
+      qrImg.src = qrApiUrl;
     }
 
     function copyShareUrl() {
