@@ -555,6 +555,19 @@
       animation: slideDown 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.1);
     }
 
+    .chef-actions-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-top: 10px;
+    }
+
+    @media (max-width: 480px) {
+      .chef-actions-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @keyframes slideDown {
       from {
         opacity: 0;
@@ -1218,10 +1231,15 @@
         </ul>
       </div>
 
-      <!-- Dangerous reset button -->
-      <button onclick="confirmReset()" class="btn btn-danger">
-        🗑️ Nullstill alle valg
-      </button>
+      <!-- Chef action buttons grid -->
+      <div class="chef-actions-grid">
+        <button onclick="shareAllOrders()" class="btn btn-chef" style="background-color: var(--color-basil-dark); color: white;">
+          🔗 Del alle valg (felleslenke)
+        </button>
+        <button onclick="confirmReset()" class="btn btn-danger">
+          🗑️ Nullstill alle valg
+        </button>
+      </div>
     </section>
 
     <!-- QR CODE & SHARING CARD -->
@@ -1332,23 +1350,27 @@
       initializeQRCode();
     });
 
-    // Load from LocalStorage
+    // Load from LocalStorage (safely wrapped in try-catch to prevent Safari Private Mode crashes)
     function loadLocalStorageData() {
-      const stored = localStorage.getItem('la_famiglia_pizza_selections');
-      if (stored) {
-        try {
+      try {
+        const stored = localStorage.getItem('la_famiglia_pizza_selections');
+        if (stored) {
           const parsed = JSON.parse(stored);
           if (parsed.selections) appState.selections = parsed.selections;
           if (parsed.targetMembers) appState.targetMembers = parseInt(parsed.targetMembers, 10) || 5;
-        } catch (e) {
-          console.error("Feil ved parsing av lagrede data", e);
         }
+      } catch (e) {
+        console.warn("Klarte ikke å laste fra LocalStorage (kan skyldes Privat nettlesing):", e);
       }
     }
 
-    // Save to LocalStorage
+    // Save to LocalStorage (safely wrapped in try-catch to prevent Safari Private Mode crashes)
     function saveLocalStorageData() {
-      localStorage.setItem('la_famiglia_pizza_selections', JSON.stringify(appState));
+      try {
+        localStorage.setItem('la_famiglia_pizza_selections', JSON.stringify(appState));
+      } catch (e) {
+        console.warn("Klarte ikke å lagre til LocalStorage (kan skyldes Privat nettlesing):", e);
+      }
     }
 
     // Display random Italian greeting
@@ -1652,18 +1674,23 @@
       }
     }
 
-    // Check if the URL contains an imported order from a family member
+    // Check if the URL contains imported order(s) from family members (supports single or multi-order merges)
     function checkURLForImportedOrder() {
       try {
         const urlParams = new URLSearchParams(window.location.search);
+        
         const importName = urlParams.get('import');
         const toppingsParam = urlParams.get('toppings');
+        const importAllParam = urlParams.get('import_all');
+        
+        let importedSomething = false;
+        let toastMsg = "";
         
         if (importName && toppingsParam !== null) {
           const capitalized = importName.trim().charAt(0).toUpperCase() + importName.trim().slice(1);
           const toppingsArray = toppingsParam ? toppingsParam.split(',').map(t => t.trim()).filter(t => t.length > 0) : [];
           
-          // Clean previous matching name to avoid duplications
+          // Clean previous matching name
           const lower = capitalized.toLowerCase();
           for (const key of Object.keys(appState.selections)) {
             if (key.toLowerCase() === lower) {
@@ -1672,11 +1699,38 @@
           }
           
           appState.selections[capitalized] = toppingsArray;
+          importedSomething = true;
+          toastMsg = `📥 Importert bestilling fra ${capitalized}! 🍕`;
+        } else if (importAllParam) {
+          try {
+            const decoded = decodeURIComponent(importAllParam);
+            const parsedAll = JSON.parse(decoded);
+            if (parsedAll && typeof parsedAll === 'object') {
+              let count = 0;
+              for (const [key, val] of Object.entries(parsedAll)) {
+                if (Array.isArray(val)) {
+                  const capitalized = key.trim().charAt(0).toUpperCase() + key.trim().slice(1);
+                  appState.selections[capitalized] = val;
+                  count++;
+                }
+              }
+              if (count > 0) {
+                importedSomething = true;
+                toastMsg = `📥 Importert ${count} bestillinger i fellesskap! 🍕`;
+              }
+            }
+          } catch (err) {
+            console.error("Feil ved parsing av fellesbestillinger", err);
+          }
+        }
+        
+        if (importedSomething) {
           saveLocalStorageData();
+          updateUI();
           
           // Beautiful toast message confirming the receipt after a small delay
           setTimeout(() => {
-            showToast(`📥 Importert bestilling fra ${capitalized}! 🍕`, "success");
+            showToast(toastMsg, "success");
             triggerConfettiBurst();
           }, 800);
           
@@ -1686,6 +1740,57 @@
         }
       } catch (e) {
         console.error("Feil ved sjekk av importert bestilling i URL", e);
+      }
+    }
+
+    // Compiles all selections from current device and generates a combined QR / Copy link 
+    // so the whole database can be sent/scanned to any other device (like the Chef's phone) in one action!
+    function shareAllOrders() {
+      const orderCount = Object.keys(appState.selections).length;
+      if (orderCount === 0) {
+        showToast("⚠️ Ingen bestillinger å dele ennå!", "danger");
+        return;
+      }
+      
+      try {
+        const baseUrl = window.location.href.split('?')[0];
+        const jsonStr = JSON.stringify(appState.selections);
+        const shareUrl = `${baseUrl}?import_all=${encodeURIComponent(jsonStr)}`;
+        
+        // Update share footer QR and text input
+        const shareUrlInput = document.getElementById('share-url');
+        const qrImg = document.getElementById('qr-code-img');
+        const spinner = document.getElementById('qr-loading-spinner');
+        const shareTitle = document.getElementById('share-card-title');
+        
+        shareUrlInput.value = shareUrl;
+        if (shareTitle) {
+          shareTitle.innerHTML = `📱 Felles QR-kode for alle ${orderCount} bestillinger!`;
+        }
+        
+        spinner.style.display = 'inline-block';
+        const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(shareUrl)}&color=1b5e20&bgcolor=faf7f0`;
+        
+        qrImg.onload = () => {
+          spinner.style.display = 'none';
+        };
+        qrImg.src = qrApiUrl;
+        
+        // Copy to clipboard
+        navigator.clipboard.writeText(shareUrl).then(() => {
+          showToast(`📋 Felleslenke for alle ${orderCount} bestillinger er kopiert!`);
+        }).catch(err => {
+          // Fallback manual copy
+          shareUrlInput.select();
+          document.execCommand('copy');
+          showToast(`📋 Felleslenke for alle ${orderCount} bestillinger er kopiert!`);
+        });
+        
+        // Scroll to sharing footer smoothly
+        document.querySelector('.share-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (e) {
+        console.error("Feil ved generering av felles delingslenke", e);
+        showToast("⚠️ Kunne ikke dele alle bestillinger", "danger");
       }
     }
 
